@@ -15,8 +15,14 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    # Nightly at 02:00 UTC (task-1370 AC#4)
-    - cron: "0 2 * * *"
+    # Weekly on Monday at 02:00 UTC. The integration source rarely changes,
+    # so a daily run added no signal beyond the push/PR triggers above — it
+    # only re-ran the same suite against unchanged code. The reason to keep a
+    # cron at all is to catch *upstream* Home Assistant / Python deprecations
+    # on the "latest" matrix lane (2026.6) before users hit them on HAOS, and
+    # HA ships roughly monthly, so weekly is plenty. (was: daily "0 2 * * *",
+    # task-1370 AC#4)
+    - cron: "0 2 * * 1"
   workflow_dispatch:
 
 jobs:
