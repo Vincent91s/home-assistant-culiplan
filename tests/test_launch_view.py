@@ -268,7 +268,10 @@ class TestBackendFailure:
 
         assert resp.status == 502
         body = json.loads(resp.text)
-        assert body["error"] == "exchange_failed"
+        # A non-401/403 backend failure (here: 500) maps to backend_unavailable
+        # so the panel offers a retry instead of a doomed login fallback
+        # (see 17cdc16: "precise SSO recovery"). 401/403 -> auth_rejected.
+        assert body["error"] == "backend_unavailable"
         assert "message" in body
         # Raw token must not appear in error response
         assert "tok_secret" not in resp.text
