@@ -271,7 +271,16 @@ class OAuth2FlowHandler(  # type: ignore[call-arg]
         # pre-Gold behaviour rather than locking the user out.
         culiplan_account_id = await self._fetch_culiplan_account_id(data)
 
-        if self.source == config_entries.SOURCE_RECONFIGURE:
+        # Reauth reuses the reconfigure finisher: both replace the OAuth
+        # identity on the existing entry (looked up via context["entry_id"])
+        # and reload it. Without this branch, reauth fell through to the
+        # new-entry path and _abort_if_unique_id_configured() dead-ended the
+        # flow with "already_configured", leaving the entry's dead token in
+        # place.
+        if self.source in (
+            config_entries.SOURCE_RECONFIGURE,
+            config_entries.SOURCE_REAUTH,
+        ):
             return await self._async_finish_reconfigure(data, culiplan_account_id)
 
         if culiplan_account_id:

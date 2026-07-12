@@ -408,6 +408,108 @@ async def test_async_setup_entry_wires_everything():
     hass.config_entries.async_forward_entry_setups.assert_awaited_once()
 
 
+def _token_refresh_error(status: int):
+    """Build the aiohttp error HA's OAuth2Session raises on a token failure."""
+    import aiohttp
+
+    return aiohttp.ClientResponseError(
+        request_info=MagicMock(),
+        history=(),
+        status=status,
+        message="Bad Request" if status == 400 else "Server Error",
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_exc_name"),
+    [
+        (400, "ConfigEntryAuthFailed"),  # refresh token gone → reauth prompt
+        (401, "ConfigEntryAuthFailed"),
+        (503, "ConfigEntryNotReady"),  # transient backend outage → retry
+    ],
+)
+@pytest.mark.asyncio
+async def test_async_setup_entry_token_refresh_failure_maps_to_ha_exception(
+    status, expected_exc_name
+):
+    """A failed token refresh at setup raises the right config-entry exception.
+
+    4xx means the refresh token no longer exists server-side (e.g. wiped
+    Redis) — only reauth can recover, so HA must show the reauthentication
+    repair instead of silently retrying setup forever.
+    """
+    from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+
+    from custom_components.culiplan import async_setup_entry
+
+    expected_exc = {
+        "ConfigEntryAuthFailed": ConfigEntryAuthFailed,
+        "ConfigEntryNotReady": ConfigEntryNotReady,
+    }[expected_exc_name]
+
+    hass = MagicMock()
+    hass.data = {}
+
+    entry = MagicMock()
+    entry.entry_id = "e1"
+    entry.data = {"token": {"access_token": "tok"}, "ai_mode": "cloud"}
+
+    session = MagicMock()
+    session.async_ensure_token_valid = AsyncMock(
+        side_effect=_token_refresh_error(status)
+    )
+
+    with (
+        patch(
+            "custom_components.culiplan.config_entry_oauth2_flow"
+            ".async_get_config_entry_implementation",
+            new=AsyncMock(return_value=MagicMock()),
+        ),
+        patch(
+            "custom_components.culiplan.config_entry_oauth2_flow.OAuth2Session",
+            return_value=session,
+        ),
+        pytest.raises(expected_exc),
+    ):
+        await async_setup_entry(hass, entry)
+
+
+@pytest.mark.asyncio
+async def test_async_setup_entry_token_refresh_network_error_is_transient():
+    """Network-level failure reaching the token endpoint → ConfigEntryNotReady."""
+    import aiohttp
+
+    from homeassistant.exceptions import ConfigEntryNotReady
+
+    from custom_components.culiplan import async_setup_entry
+
+    hass = MagicMock()
+    hass.data = {}
+
+    entry = MagicMock()
+    entry.entry_id = "e1"
+    entry.data = {"token": {"access_token": "tok"}, "ai_mode": "cloud"}
+
+    session = MagicMock()
+    session.async_ensure_token_valid = AsyncMock(
+        side_effect=aiohttp.ClientConnectorError(MagicMock(), OSError("boom"))
+    )
+
+    with (
+        patch(
+            "custom_components.culiplan.config_entry_oauth2_flow"
+            ".async_get_config_entry_implementation",
+            new=AsyncMock(return_value=MagicMock()),
+        ),
+        patch(
+            "custom_components.culiplan.config_entry_oauth2_flow.OAuth2Session",
+            return_value=session,
+        ),
+        pytest.raises(ConfigEntryNotReady),
+    ):
+        await async_setup_entry(hass, entry)
+
+
 @pytest.mark.asyncio
 async def test_register_intents_handles_unknown_language():
     """The integration falls back to English for unsupported languages."""

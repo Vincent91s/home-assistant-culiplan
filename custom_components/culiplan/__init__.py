@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any, cast
 
+import aiohttp
 import yaml
 from homeassistant.components.application_credentials import (
     ClientCredential,
@@ -15,6 +16,7 @@ from homeassistant.components.application_credentials import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import (
     aiohttp_client,
     config_entry_oauth2_flow,
@@ -306,7 +308,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     session = config_entry_oauth2_flow.OAuth2Session(hass, entry, implementation)
-    await session.async_ensure_token_valid()
+
+    async def _async_refresh_or_reauth() -> None:
+        """Refresh the token, mapping failures to HA's config-entry exceptions.
+
+        A 4xx from the token endpoint means the refresh token is gone server-side
+        (revoked, expired, or rotated away) — only reauth can recover, so raise
+        ConfigEntryAuthFailed to surface HA's reauthentication repair instead of
+        a permanent silent setup-retry loop. 5xx / network errors are transient.
+        OAuth2TokenRequestReauthError subclasses aiohttp.ClientResponseError, so
+        this also covers HA cores that raise the plain aiohttp error.
+        """
+        try:
+            await session.async_ensure_token_valid()
+        except aiohttp.ClientResponseError as err:
+            if 400 <= err.status < 500:
+                raise ConfigEntryAuthFailed(
+                    "Culiplan rejected the OAuth refresh token; reauthentication required"
+                ) from err
+            raise ConfigEntryNotReady(
+                f"Culiplan token endpoint returned {err.status}"
+            ) from err
+        except aiohttp.ClientError as err:
+            raise ConfigEntryNotReady(
+                f"Could not reach the Culiplan token endpoint: {err}"
+            ) from err
+
+    await _async_refresh_or_reauth()
 
     async def _async_token() -> str:
         """Ensure the OAuth token is valid (refresh if near expiry) and return it.
@@ -314,8 +342,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         Shared by the REST client and the Socket.IO coordinator so a single
         OAuth2Session owns refresh — avoids two sessions racing a rotation and
         keeps long-lived entries from 401-ing once the initial token ages out.
+        ConfigEntryAuthFailed raised here propagates through the coordinator,
+        which triggers HA's reauth flow.
         """
-        await session.async_ensure_token_valid()
+        await _async_refresh_or_reauth()
         return cast(str, session.token["access_token"])
 
     client = CuliplanApiClient(

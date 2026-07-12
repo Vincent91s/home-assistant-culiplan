@@ -2,6 +2,26 @@
 
 All notable changes to the Culiplan Home Assistant integration are documented here. Format adheres to [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.1] — 2026-07-12
+
+Critical reliability release. If your integration has been stuck on "Error setting up entry" since late June, update to this version: Home Assistant will then prompt you to **reauthenticate** (a two-click re-login) instead of failing silently. Background: the Culiplan backend migrated infrastructure on 2026-06-25 and server-side OAuth refresh tokens did not survive the move, so every linked Home Assistant lost its session.
+
+### Fixed
+
+- **A dead refresh token now triggers Home Assistant's reauthentication repair instead of a silent, permanent setup-retry loop.** `async_setup_entry` called `session.async_ensure_token_valid()` bare; the `OAuth2TokenRequestReauthError` HA raises on a 4xx token response does *not* subclass `ConfigEntryAuthFailed`, so setup just failed generically and HA retried forever without ever telling the user to sign in again. Token refresh (at setup **and** at runtime via the shared token provider) is now wrapped: 4xx → `ConfigEntryAuthFailed` (surfaces the reauth repair), 5xx / network errors → `ConfigEntryNotReady` (transient retry). Catching `aiohttp.ClientResponseError` covers both current HA cores and older ones that raise the plain aiohttp error.
+- **The reauthentication flow now actually repairs the entry.** `async_oauth_create_entry` only special-cased `SOURCE_RECONFIGURE`; a reauth fell through to the new-entry path, where `_abort_if_unique_id_configured()` aborted with `already_configured` — dead-ending the flow and leaving the invalid token in place. `SOURCE_REAUTH` now routes through the same finisher as reconfigure: same-account check, token replacement on the existing entry, reload.
+
+### Tests
+
+- 672 passing (was 667): parametrized setup-time token-failure mapping (400/401 → reauth, 503 → retry, network error → retry) and a regression test pinning `SOURCE_REAUTH` to the entry-updating finisher.
+
+## [0.14.0] — 2026-06-08 (not released standalone; first shipped in 0.14.1)
+
+### Added
+
+- **Blueprint: mirror the Culiplan shopping list into any Home Assistant to-do list** (Microsoft To Do, Todoist, …).
+- **Sidebar panel recovers from SSO bridge failures** with a diagnostic trace, distinguishing `auth_rejected` from `backend_unavailable` (including 5xx exchange failures).
+
 ## [0.13.2] — 2026-06-08
 
 Bugfix. Clears the blocking-call warnings the self-updater raised inside the event loop.

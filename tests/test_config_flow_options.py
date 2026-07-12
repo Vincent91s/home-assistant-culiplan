@@ -681,6 +681,34 @@ async def test_reconfigure_falls_back_to_new_entry_when_existing_missing(hass):
 
 
 @pytest.mark.asyncio
+async def test_oauth_create_entry_reauth_source_routes_to_reconfigure_finisher(hass):
+    """SOURCE_REAUTH must update the existing entry, not hit the new-entry path.
+
+    Regression: reauth previously fell through to the new-entry branch where
+    _abort_if_unique_id_configured() dead-ended the flow with
+    "already_configured", leaving the entry's dead token in place.
+    """
+    from homeassistant import config_entries
+
+    from custom_components.culiplan.config_flow import OAuth2FlowHandler
+
+    flow = OAuth2FlowHandler()
+    flow.hass = hass
+    flow.context = {"source": config_entries.SOURCE_REAUTH, "entry_id": "e1"}
+    flow._fetch_culiplan_account_id = AsyncMock(return_value="account-A")
+    flow._async_finish_reconfigure = AsyncMock(
+        return_value={"type": FlowResultType.ABORT, "reason": "reauth_successful"}
+    )
+
+    result = await flow.async_oauth_create_entry({"token": {"access_token": "tok2"}})
+
+    assert result["reason"] == "reauth_successful"
+    flow._async_finish_reconfigure.assert_awaited_once_with(
+        {"token": {"access_token": "tok2"}}, "account-A"
+    )
+
+
+@pytest.mark.asyncio
 async def test_async_step_reconfigure_delegates_to_user(hass):
     from custom_components.culiplan.config_flow import OAuth2FlowHandler
 
