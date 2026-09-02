@@ -3,8 +3,16 @@
  * Build Culiplan Lovelace card bundles.
  *
  * Bundles each card .ts source into a self-contained .js file under
- * lovelace/cards/dist/. The bundle inlines lit so HA loads zero external
- * dependencies at runtime (privacy + reliability + supply-chain safety).
+ * custom_components/culiplan/frontend/cards/. The bundle inlines lit so HA
+ * loads zero external dependencies at runtime (privacy + reliability +
+ * supply-chain safety).
+ *
+ * Output lives INSIDE the integration package on purpose. HACS installs an
+ * integration by copying custom_components/<domain>/ and nothing else, so a
+ * bundle emitted anywhere outside that tree never reaches the user's config
+ * dir — which is why the old /hacsfiles/culiplan/... resource URLs 404'd.
+ * The integration serves this directory at /culiplan_static/cards/ (see
+ * _async_register_sidebar_panel in custom_components/culiplan/__init__.py).
  *
  * Usage:
  *   pnpm install
@@ -19,7 +27,14 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cardsDir = resolve(__dirname, "cards");
-const distDir = resolve(cardsDir, "dist");
+const distDir = resolve(
+  __dirname,
+  "..",
+  "custom_components",
+  "culiplan",
+  "frontend",
+  "cards",
+);
 
 const CARDS = [
   { src: "kitchen-dashboard.ts",    out: "kitchen-dashboard.js"    },

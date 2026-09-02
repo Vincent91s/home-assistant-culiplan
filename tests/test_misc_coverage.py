@@ -57,13 +57,14 @@ class TestBuildDeviceInfo:
         assert info["sw_version"] is not None
 
     def test_manifest_failure_returns_none_sw_version(self):
+        """sw_version is None when the cached manifest version is unavailable.
+
+        const.py reads the manifest once at import (off the event loop) and
+        falls back to "dev"; helpers maps that to no sw_version at all.
+        """
         from custom_components.culiplan import helpers
 
-        with patch.object(
-            helpers,
-            "_MANIFEST_PATH",
-            MagicMock(read_text=MagicMock(side_effect=OSError("boom"))),
-        ):
+        with patch.object(helpers, "MANIFEST_VERSION", "dev"):
             entry = MagicMock()
             entry.entry_id = "e1"
             info = helpers._build_device_info(entry)

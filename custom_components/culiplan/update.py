@@ -33,10 +33,8 @@ v0.12.0 change
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from datetime import timedelta
-from pathlib import Path
 from typing import Any
 
 from homeassistant.components.update import UpdateEntity, UpdateEntityFeature
@@ -45,6 +43,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .const import MANIFEST_VERSION
 from .helpers import _build_device_info
 from .updater import LatestRelease, async_check_latest, async_perform_update, is_newer
 
@@ -53,16 +52,15 @@ _LOGGER = logging.getLogger(__name__)
 # How often HA polls GitHub for a newer release (also refreshable on demand).
 SCAN_INTERVAL = timedelta(hours=1)
 
-_MANIFEST_PATH = Path(__file__).parent / "manifest.json"
-
 
 def _installed_version() -> str:
-    """Read the running integration version from manifest.json."""
-    try:
-        data = json.loads(_MANIFEST_PATH.read_text(encoding="utf-8"))
-        return str(data["version"])
-    except Exception:  # noqa: BLE001
-        return "0.0.0"
+    """Return the running integration version.
+
+    Sourced from ``const.MANIFEST_VERSION`` (read once at module import).
+    Reading manifest.json here instead blocked the event loop, since this is
+    called from entity construction during platform setup.
+    """
+    return "0.0.0" if MANIFEST_VERSION == "dev" else MANIFEST_VERSION
 
 
 async def async_setup_entry(

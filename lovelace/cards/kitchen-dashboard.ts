@@ -10,7 +10,8 @@
  *
  * Registration: culiplan-kitchen-dashboard
  * Auto-loaded: custom_components/culiplan/__init__.py registers
- *              lovelace/cards/dist/kitchen-dashboard.js as a resource.
+ *              custom_components/culiplan/frontend/cards/kitchen-dashboard.js
+ *              as a resource.
  */
 
 import { LitElement, html, css } from "lit";

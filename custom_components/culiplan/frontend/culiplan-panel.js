@@ -67,23 +67,43 @@ const HA_THEME_TOKEN_NAMES = [
 ];
 
 const STYLES = `
+  /*
+   * Height must be VIEWPORT-relative, not ancestor-relative.
+   *
+   * HA mounts a custom panel (component_name "custom", embed_iframe false)
+   * without giving <ha-panel-custom> a definite height, so a \`height: 100%\`
+   * here resolves to \`auto\`: the host shrinks to content height (~150px) and
+   * the iframe collapses with it. 100vh does not depend on any ancestor.
+   *
+   * The custom panel renders full-bleed — HA draws no toolbar above it — so
+   * the full viewport height is correct with no header offset to subtract.
+   * 100dvh (progressive enhancement; ignored by browsers that lack it)
+   * tracks the dynamic viewport so mobile browser chrome does not clip the
+   * bottom of the app.
+   */
   :host {
-    display: block;
-    height: 100%;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
     width: 100%;
   }
+  /* flex child: min-height 0 stops the default \`auto\` minimum from letting
+     iframe content push the box past the host. */
   .fill {
+    flex: 1 1 auto;
     width: 100%;
-    height: 100%;
+    min-height: 0;
     border: none;
     display: block;
   }
   .error-container,
   .loading-container {
+    flex: 1 1 auto;
+    min-height: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    height: 100%;
     padding: 24px;
     box-sizing: border-box;
   }

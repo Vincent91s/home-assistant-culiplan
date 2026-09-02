@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json as _json
 import logging
 from pathlib import Path
 from typing import Any, cast
@@ -26,7 +25,7 @@ from homeassistant.helpers import (
 from homeassistant.helpers.typing import ConfigType
 
 from .api import CuliplanApiClient
-from .const import DOMAIN, OAUTH_CLIENT_ID, PLATFORMS
+from .const import DOMAIN, MANIFEST_VERSION, OAUTH_CLIENT_ID, PLATFORMS
 from .coordinator import CuliplanCoordinator
 from .cooking_services import (
     async_register_cooking_services,
@@ -37,26 +36,24 @@ from .llm_api import async_register_llm_api, async_unregister_llm_api
 from .services import async_register_services, async_unregister_services
 
 
-def _read_manifest_version() -> str:
-    """Read the integration version from manifest.json at module load time.
-
-    Used to cache-bust the sidebar panel module URL so version bumps don't
-    require users to hard-refresh.
-    """
-    try:
-        manifest_path = Path(__file__).parent / "manifest.json"
-        return str(_json.loads(manifest_path.read_text()).get("version", "dev"))
-    except Exception:  # noqa: BLE001
-        return "dev"
-
-
-MANIFEST_VERSION: str = _read_manifest_version()
-
 # ─── Lovelace resource auto-registration (task-1408) ─────────────────────────
 #
-# HACS installs the integration at <config>/custom_components/culiplan/.
-# The Lovelace JS resources are served from the wwwroot under the HACS-
-# standard path /hacsfiles/culiplan/<filename>.
+# Card bundles are served from the integration's own static path,
+# /culiplan_static/cards/<name>.js, registered in
+# _async_register_sidebar_panel() from custom_components/culiplan/frontend/cards/.
+#
+# These used to point at /hacsfiles/culiplan/lovelace/cards/dist/<name>.js on
+# the assumption that HACS mirrors the whole repo into <config>/www/community/.
+# It does not: for an *integration* repo HACS copies custom_components/<domain>/
+# and nothing else, so /hacsfiles/culiplan/... was never populated and all three
+# resources 404'd on every dashboard load. Serving them ourselves makes the
+# files present for every install method — HACS, manual copy, or the built-in
+# update entity.
+#
+# Deliberately un-versioned: the static path is registered with
+# cache_headers=False, so a version query string is unnecessary — and it would
+# be actively harmful here, since a changing URL means a *new* resource row on
+# every upgrade, leaving the old one behind forever.
 #
 # Decision on unload: resources are NOT auto-removed when the integration
 # is unloaded/reloaded. Removing them would break dashboards that the user
@@ -65,17 +62,25 @@ MANIFEST_VERSION: str = _read_manifest_version()
 #
 _LOVELACE_RESOURCES: tuple[dict[str, str], ...] = (
     {
-        "url": "/hacsfiles/culiplan/lovelace/cards/dist/kitchen-dashboard.js",
+        "url": "/culiplan_static/cards/kitchen-dashboard.js",
         "res_type": "module",
     },
     {
-        "url": "/hacsfiles/culiplan/lovelace/cards/dist/pantry-tracker.js",
+        "url": "/culiplan_static/cards/pantry-tracker.js",
         "res_type": "module",
     },
     {
-        "url": "/hacsfiles/culiplan/lovelace/cards/dist/cooking-mode.js",
+        "url": "/culiplan_static/cards/cooking-mode.js",
         "res_type": "module",
     },
+)
+
+# Resource URLs this integration registered in earlier versions and which are
+# known-dead. Any resource row whose URL starts with one of these is removed on
+# setup — see _async_register_lovelace_resources(). Scoped to Culiplan-owned
+# prefixes so a user's own resources are never touched.
+_STALE_RESOURCE_URL_PREFIXES: tuple[str, ...] = (
+    "/hacsfiles/culiplan/lovelace/cards/dist/",
 )
 
 # Sidebar panel path — kept module-level so register/unregister refer to the same name.
@@ -118,9 +123,19 @@ async def _async_register_lovelace_resources(hass: HomeAssistant) -> None:
     Falls back gracefully if the Lovelace component is not yet loaded or
     if the storage collection API has changed (e.g. dev HA builds).
 
-    Idempotency: checks whether a resource with the same URL is already
-    registered before calling async_create_item — safe to call on every
-    integration reload.
+    Idempotency: the set of already-registered URLs is read first, and we
+    only create the ones that are missing. Crucially, if that read fails for
+    any reason we **skip registration entirely** rather than assuming
+    "nothing is registered" — guessing wrong there appends a fresh row with a
+    new UUID on every single startup. That is exactly what the previous
+    version did: it awaited `async_items()` (a sync @callback returning a
+    list, so `await` raised TypeError) and then called `async_load(True)`
+    (which takes no arguments, so it raised TypeError too), landing in a bare
+    `except Exception: existing_items = []`. One reporter's instance had
+    accumulated 1398 resource rows — 466 duplicates of each of three cards.
+
+    Also removes rows left behind by earlier versions: dead
+    /hacsfiles/culiplan/... URLs and any duplicates of our current URLs.
 
     Unload behaviour: resources are intentionally NOT removed on
     integration unload/reload (see _LOVELACE_RESOURCES comment above).
@@ -141,46 +156,93 @@ async def _async_register_lovelace_resources(hass: HomeAssistant) -> None:
             )
             return
 
-        # Build a set of already-registered URLs for O(1) lookup.
-        try:
-            existing_items = await resource_collection.async_items()
-        except (AttributeError, TypeError):
-            # Some HA builds use .async_load() then .data
-            try:
-                await resource_collection.async_load(True)
-                existing_items = list(resource_collection.data.values())
-            except Exception:
-                existing_items = []
+        # ResourceStorageCollection lazily loads from storage; async_items()
+        # returns an empty list until it has. Every public mutator calls
+        # _async_ensure_loaded() internally, but the read path does not — so
+        # load explicitly, or we would read "no resources" and re-create all
+        # three on top of whatever is already stored.
+        #
+        # async_get_info() is the public call that runs _async_ensure_loaded()
+        # and flips `.loaded`. Prefer it over calling async_load() directly: a
+        # bare async_load() leaves `.loaded` False, so the first create would
+        # trigger a second load and re-notify every existing item.
+        if not getattr(resource_collection, "loaded", False):
+            if hasattr(resource_collection, "async_get_info"):
+                await resource_collection.async_get_info()
+            else:
+                await resource_collection.async_load()
+                resource_collection.loaded = True
 
-        existing_urls: set[str] = {
-            item.get("url", "") for item in existing_items if isinstance(item, dict)
-        }
-
-        for resource in _LOVELACE_RESOURCES:
-            url = resource["url"]
-            if url in existing_urls:
-                _LOGGER.debug(
-                    "[culiplan] Lovelace resource already registered: %s", url
-                )
-                continue
-            try:
-                await resource_collection.async_create_item(
-                    {"url": url, "res_type": resource["res_type"]}
-                )
-                _LOGGER.info("[culiplan] Registered Lovelace resource: %s", url)
-            except Exception as err:
-                _LOGGER.warning(
-                    "[culiplan] Could not register Lovelace resource %s: %s", url, err
-                )
+        # async_items() is a synchronous @callback (homeassistant.helpers
+        # .collection.ObservableCollection.async_items) — it must NOT be awaited.
+        existing_items = resource_collection.async_items()
 
     except Exception as err:
-        # Non-fatal: if resource registration fails the integration still works.
-        # The manual fallback in lovelace/README.md covers this case.
+        # Fail CLOSED: without a trustworthy view of what is already
+        # registered we cannot register anything without risking duplicates.
         _LOGGER.warning(
-            "[culiplan] Lovelace resource auto-registration failed (non-fatal): %s. "
-            "Use the manual steps in lovelace/README.md instead.",
+            "[culiplan] Could not read existing Lovelace resources (%s) — skipping "
+            "auto-registration to avoid creating duplicates. See lovelace/README.md "
+            "for manual setup.",
             err,
         )
+        return
+
+    wanted_urls = {resource["url"] for resource in _LOVELACE_RESOURCES}
+    seen_urls: set[str] = set()
+    stale_item_ids: list[tuple[str, str]] = []  # (item_id, url) for logging
+
+    for item in existing_items:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url", "")
+        item_id = item.get("id")
+
+        # Dead URLs from earlier Culiplan versions.
+        if url.startswith(_STALE_RESOURCE_URL_PREFIXES):
+            if item_id:
+                stale_item_ids.append((item_id, url))
+            continue
+
+        # Duplicate rows for a URL we own — keep the first, drop the rest.
+        if url in wanted_urls:
+            if url in seen_urls:
+                if item_id:
+                    stale_item_ids.append((item_id, url))
+            else:
+                seen_urls.add(url)
+
+    for item_id, url in stale_item_ids:
+        try:
+            await resource_collection.async_delete_item(item_id)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug(
+                "[culiplan] Could not remove stale Lovelace resource %s (%s): %s",
+                url,
+                item_id,
+                err,
+            )
+
+    if stale_item_ids:
+        _LOGGER.info(
+            "[culiplan] Removed %d stale/duplicate Culiplan Lovelace resource(s)",
+            len(stale_item_ids),
+        )
+
+    for resource in _LOVELACE_RESOURCES:
+        url = resource["url"]
+        if url in seen_urls:
+            _LOGGER.debug("[culiplan] Lovelace resource already registered: %s", url)
+            continue
+        try:
+            await resource_collection.async_create_item(
+                {"url": url, "res_type": resource["res_type"]}
+            )
+            _LOGGER.info("[culiplan] Registered Lovelace resource: %s", url)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "[culiplan] Could not register Lovelace resource %s: %s", url, err
+            )
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -374,8 +436,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # via the official llm.async_register_api() mechanism. Non-fatal if the
     # LLM helper is unavailable on older HA versions.
     async_register_llm_api(hass)
-    await _async_register_lovelace_resources(hass)
+    # Panel first: it registers the /culiplan_static path that serves the card
+    # bundles the Lovelace resources point at.
     await _async_register_sidebar_panel(hass)
+    await _async_register_lovelace_resources(hass)
     entry.async_on_unload(coordinator.async_stop)
     entry.async_on_unload(lambda: async_unregister_services(hass))
     entry.async_on_unload(lambda: async_unregister_cooking_services(hass))
@@ -413,8 +477,10 @@ async def _async_register_sidebar_panel(hass: HomeAssistant) -> None:
     #    ``register_view`` is idempotent — calling it again replaces the existing route.
     hass.http.register_view(CuliplanLaunchView(hass))
 
-    # 2. Serve the panel JS from a dedicated static path so the file is
-    #    reachable at /culiplan_static/culiplan-panel.js.
+    # 2. Serve the frontend directory from a dedicated static path. This
+    #    covers both the sidebar panel (/culiplan_static/culiplan-panel.js)
+    #    and the Lovelace card bundles (/culiplan_static/cards/<name>.js,
+    #    see _LOVELACE_RESOURCES) — subdirectories are served too.
     #    cache_headers=False ensures the browser always gets the latest version
     #    after an integration update without requiring a hard-refresh.
     #    HA 2025.9+ removed the legacy synchronous register_static_path (it did

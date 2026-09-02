@@ -30,11 +30,12 @@ def test_installed_version_reads_manifest():
 
 
 def test_installed_version_fallback_on_manifest_failure():
-    """Returns "0.0.0" if the manifest cannot be parsed."""
-    with patch(
-        "custom_components.culiplan.update._MANIFEST_PATH",
-        MagicMock(read_text=MagicMock(side_effect=OSError("boom"))),
-    ):
+    """Returns "0.0.0" when the cached manifest version is unavailable.
+
+    The manifest is read once in const.py (at import, off the event loop) and
+    yields "dev" if unreadable; update.py maps that to the "0.0.0" sentinel.
+    """
+    with patch("custom_components.culiplan.update.MANIFEST_VERSION", "dev"):
         assert _installed_version() == "0.0.0"
 
 

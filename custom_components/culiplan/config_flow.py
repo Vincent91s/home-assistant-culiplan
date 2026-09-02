@@ -12,10 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
-import json as _json
 import logging
 import time
-from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
@@ -55,6 +53,7 @@ from .const import (
     CONF_MEALIE_TOKEN,
     CONF_MEALIE_URL,
     DOMAIN,
+    MANIFEST_VERSION,
     MEALIE_ROLLBACK_WINDOW_SECONDS,
     OAUTH_CLIENT_ID,
 )
@@ -81,22 +80,12 @@ _MANUAL_ENTRY = "__manual__"
 _LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
-def _read_manifest_version() -> str:
-    """Read the integration version from manifest.json at module load time.
-
-    Duplicates the same helper in ``__init__.py`` deliberately — importing
-    MANIFEST_VERSION from the package ``__init__`` would create a circular
-    import because HA's config-entry framework loads ``config_flow`` before
-    the package init has finished.
-    """
-    try:
-        manifest_path = Path(__file__).parent / "manifest.json"
-        return str(_json.loads(manifest_path.read_text()).get("version", "dev"))
-    except Exception:  # noqa: BLE001
-        return "dev"
-
-
-_MANIFEST_VERSION: str = _read_manifest_version()
+# Module-local alias for the version cached in ``const``. It lives in const.py
+# rather than the package ``__init__`` because HA's config-entry framework
+# loads ``config_flow`` before the package init has finished — importing from
+# ``__init__`` here would be circular. const.py imports nothing from the
+# package, so it is always safe.
+_MANIFEST_VERSION: str = MANIFEST_VERSION
 
 
 def _is_loopback_host(endpoint: str) -> bool:

@@ -17,11 +17,10 @@ from custom_components.culiplan import (
     _async_register_lovelace_resources,
     _make_cooking_intent_handler,
     _make_intent_handler,
-    _read_manifest_version,
     async_setup,
     async_unload_entry,
 )
-from custom_components.culiplan.const import DOMAIN
+from custom_components.culiplan.const import DOMAIN, _read_manifest_version
 
 
 # ─── _read_manifest_version ───────────────────────────────────────────────────
@@ -53,6 +52,73 @@ async def test_async_setup_imports_oauth_credential():
 # ─── _async_register_lovelace_resources ───────────────────────────────────────
 
 
+class _FakeResourceCollection:
+    """Mirrors homeassistant.components.lovelace.resources.ResourceStorageCollection.
+
+    The parts of the real contract that matter here — and that the original
+    implementation got wrong, which is how it shipped a bug that grew one
+    reporter's instance to 1398 resource rows:
+
+      * ``async_items()`` is a SYNC ``@callback`` returning ``list(data.values())``.
+        Awaiting it raises ``TypeError``.
+      * ``async_load()`` takes NO arguments. Calling ``async_load(True)`` raises
+        ``TypeError``.
+      * ``async_load()`` does not itself set ``.loaded``; ``_async_ensure_loaded``
+        does, and every public mutator calls it.
+      * Stored items are dicts carrying ``id`` / ``url`` / ``type``.
+    """
+
+    def __init__(self, stored=None, *, load_error: Exception | None = None) -> None:
+        self._stored = list(stored or [])
+        self.data: dict[str, dict] = {}
+        self.loaded = False
+        self.load_error = load_error
+        self.created: list[dict] = []
+        self.deleted: list[str] = []
+        self._counter = 0
+
+    async def async_load(self) -> None:
+        if self.load_error is not None:
+            raise self.load_error
+        for item in self._stored:
+            self.data[item["id"]] = item
+
+    async def async_get_info(self) -> dict[str, int]:
+        if not self.loaded:
+            await self.async_load()
+            self.loaded = True
+        return {"resources": len(self.data)}
+
+    def async_items(self) -> list[dict]:
+        """Sync, exactly like the real @callback."""
+        return list(self.data.values())
+
+    async def async_create_item(self, data: dict) -> dict:
+        await self.async_get_info()
+        self._counter += 1
+        item = {
+            "id": f"gen{self._counter}",
+            "url": data["url"],
+            "type": data["res_type"],
+        }
+        self.data[item["id"]] = item
+        self.created.append(item)
+        return item
+
+    async def async_delete_item(self, item_id: str) -> None:
+        await self.async_get_info()
+        self.data.pop(item_id, None)
+        self.deleted.append(item_id)
+
+
+def _hass_with(collection) -> MagicMock:
+    lovelace = MagicMock()
+    lovelace.resources = collection
+    hass = MagicMock()
+    hass.data = {"lovelace": lovelace}
+    return hass
+
+
 @pytest.mark.asyncio
 async def test_lovelace_resources_skipped_when_collection_missing():
     """No hass.data['lovelace'] → log and skip (non-fatal)."""
@@ -65,21 +131,43 @@ async def test_lovelace_resources_skipped_when_collection_missing():
 @pytest.mark.asyncio
 async def test_lovelace_resources_registered_when_collection_present():
     """When the resource collection exists, missing resources are created."""
-    resources_collection = MagicMock()
-    resources_collection.async_items = AsyncMock(return_value=[])
-    resources_collection.async_create_item = AsyncMock()
-    lovelace = MagicMock()
-    lovelace.resources = resources_collection
-
-    hass = MagicMock()
-    hass.data = {"lovelace": lovelace}
-
-    await _async_register_lovelace_resources(hass)
-
-    # Each entry in _LOVELACE_RESOURCES → one async_create_item call.
     from custom_components.culiplan import _LOVELACE_RESOURCES
 
-    assert resources_collection.async_create_item.call_count == len(_LOVELACE_RESOURCES)
+    collection = _FakeResourceCollection()
+    await _async_register_lovelace_resources(_hass_with(collection))
+
+    assert len(collection.created) == len(_LOVELACE_RESOURCES)
+    assert {c["url"] for c in collection.created} == {
+        r["url"] for r in _LOVELACE_RESOURCES
+    }
+
+
+@pytest.mark.asyncio
+async def test_lovelace_resources_urls_are_self_served():
+    """Cards must be served from the integration's own static path.
+
+    /hacsfiles/culiplan/... only exists for HACS *plugin* repos. HACS installs
+    an integration by copying custom_components/<domain>/ alone, so those URLs
+    404'd on every dashboard load.
+    """
+    from custom_components.culiplan import _LOVELACE_RESOURCES
+
+    for resource in _LOVELACE_RESOURCES:
+        assert resource["url"].startswith("/culiplan_static/cards/"), resource["url"]
+
+
+@pytest.mark.asyncio
+async def test_lovelace_resource_files_exist_on_disk():
+    """Every registered URL must map to a file shipped inside the package."""
+    from pathlib import Path
+
+    import custom_components.culiplan as init_mod
+    from custom_components.culiplan import _LOVELACE_RESOURCES
+
+    frontend = Path(init_mod.__file__).parent / "frontend"
+    for resource in _LOVELACE_RESOURCES:
+        rel = resource["url"].removeprefix("/culiplan_static/")
+        assert (frontend / rel).is_file(), f"missing bundle for {resource['url']}"
 
 
 @pytest.mark.asyncio
@@ -87,60 +175,160 @@ async def test_lovelace_resources_skips_already_registered():
     """Resources already registered are skipped."""
     from custom_components.culiplan import _LOVELACE_RESOURCES
 
-    existing = [{"url": r["url"]} for r in _LOVELACE_RESOURCES]
-    resources_collection = MagicMock()
-    resources_collection.async_items = AsyncMock(return_value=existing)
-    resources_collection.async_create_item = AsyncMock()
-    lovelace = MagicMock()
-    lovelace.resources = resources_collection
+    stored = [
+        {"id": f"e{i}", "url": r["url"], "type": "module"}
+        for i, r in enumerate(_LOVELACE_RESOURCES)
+    ]
+    collection = _FakeResourceCollection(stored)
+    await _async_register_lovelace_resources(_hass_with(collection))
 
-    hass = MagicMock()
-    hass.data = {"lovelace": lovelace}
-
-    await _async_register_lovelace_resources(hass)
-
-    resources_collection.async_create_item.assert_not_called()
+    assert collection.created == []
+    assert collection.deleted == []
 
 
 @pytest.mark.asyncio
-async def test_lovelace_resources_legacy_collection_fallback():
-    """Old HA builds expose .data on the resource collection instead of
-    .async_items(); the registration helper falls back gracefully.
+async def test_lovelace_resources_do_not_accumulate_across_restarts():
+    """Regression: repeated setups must not append a new row every time.
+
+    The original code awaited the sync ``async_items()`` and then called
+    ``async_load(True)``; both raised TypeError and the bare ``except`` left
+    "existing" empty, so every startup registered three more rows with fresh
+    UUIDs. 466 restarts → 1398 resources.
     """
-    resources_collection = MagicMock()
-    resources_collection.async_items = AsyncMock(side_effect=AttributeError("old API"))
-    resources_collection.async_load = AsyncMock()
-    resources_collection.data = {"id1": {"url": "other"}}
-    resources_collection.async_create_item = AsyncMock()
-    lovelace = MagicMock()
-    lovelace.resources = resources_collection
+    from custom_components.culiplan import _LOVELACE_RESOURCES
 
-    hass = MagicMock()
-    hass.data = {"lovelace": lovelace}
+    collection = _FakeResourceCollection()
+    hass = _hass_with(collection)
 
-    await _async_register_lovelace_resources(hass)
+    for _ in range(5):
+        await _async_register_lovelace_resources(hass)
 
-    # The 3 culiplan resources are registered because none match "other".
-    assert resources_collection.async_create_item.await_count >= 1
+    assert len(collection.data) == len(_LOVELACE_RESOURCES)
+    assert len(collection.created) == len(_LOVELACE_RESOURCES)
+
+
+@pytest.mark.asyncio
+async def test_lovelace_resources_fail_closed_when_existing_unreadable():
+    """If the existing set cannot be read, register nothing.
+
+    Assuming "nothing is registered" is what produced the duplicate pile-up,
+    so an unreadable collection must skip rather than guess.
+    """
+    collection = _FakeResourceCollection(load_error=RuntimeError("storage on fire"))
+    await _async_register_lovelace_resources(_hass_with(collection))
+
+    assert collection.created == []
+    assert collection.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_lovelace_resources_never_awaits_async_items():
+    """async_items() is a sync @callback — awaiting it must not happen.
+
+    A collection whose async_items() is sync-only (the real shape) still
+    produces a correct read; if the code awaited it, the TypeError would trip
+    the fail-closed path and create nothing.
+    """
+    from custom_components.culiplan import _LOVELACE_RESOURCES
+
+    collection = _FakeResourceCollection()
+    await _async_register_lovelace_resources(_hass_with(collection))
+    assert len(collection.created) == len(_LOVELACE_RESOURCES)
+
+
+@pytest.mark.asyncio
+async def test_lovelace_resources_removes_stale_hacsfiles_rows():
+    """Dead /hacsfiles/culiplan/... rows from earlier versions are cleaned up."""
+    from custom_components.culiplan import _LOVELACE_RESOURCES
+
+    stale = [
+        {
+            "id": f"old{i}",
+            "url": f"/hacsfiles/culiplan/lovelace/cards/dist/{name}.js",
+            "type": "module",
+        }
+        for i, name in enumerate(
+            ["kitchen-dashboard", "pantry-tracker", "cooking-mode"]
+        )
+    ]
+    keep = {"id": "mine", "url": "/local/my-own-card.js", "type": "module"}
+    collection = _FakeResourceCollection([*stale, keep])
+
+    await _async_register_lovelace_resources(_hass_with(collection))
+
+    assert set(collection.deleted) == {"old0", "old1", "old2"}
+    # The user's unrelated resource is untouched...
+    assert "mine" in collection.data
+    # ...and the three current URLs are now registered exactly once each.
+    assert len(collection.created) == len(_LOVELACE_RESOURCES)
+    urls = [item["url"] for item in collection.data.values()]
+    for resource in _LOVELACE_RESOURCES:
+        assert urls.count(resource["url"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_lovelace_resources_collapses_existing_duplicates():
+    """An instance that already piled up duplicates is repaired to one row each."""
+    from custom_components.culiplan import _LOVELACE_RESOURCES
+
+    target = _LOVELACE_RESOURCES[0]["url"]
+    stored = [
+        {"id": f"dup{i}", "url": target, "type": "module"} for i in range(20)
+    ]
+    collection = _FakeResourceCollection(stored)
+
+    await _async_register_lovelace_resources(_hass_with(collection))
+
+    remaining = [i for i in collection.data.values() if i["url"] == target]
+    assert len(remaining) == 1
+    assert len(collection.deleted) == 19
 
 
 @pytest.mark.asyncio
 async def test_lovelace_resources_create_failure_is_non_fatal():
     """If a single resource fails to register, the others must still be tried."""
-    resources_collection = MagicMock()
-    resources_collection.async_items = AsyncMock(return_value=[])
-    resources_collection.async_create_item = AsyncMock(
-        side_effect=[RuntimeError("conflict"), None, None]
-    )
-    lovelace = MagicMock()
-    lovelace.resources = resources_collection
+    from custom_components.culiplan import _LOVELACE_RESOURCES
 
-    hass = MagicMock()
-    hass.data = {"lovelace": lovelace}
+    collection = _FakeResourceCollection()
+    attempted: list[str] = []
+    real_create = collection.async_create_item
+
+    async def _flaky(data):
+        attempted.append(data["url"])
+        if len(attempted) == 1:
+            raise RuntimeError("conflict")
+        return await real_create(data)
+
+    collection.async_create_item = _flaky
 
     # Must not raise
-    await _async_register_lovelace_resources(hass)
-    assert resources_collection.async_create_item.await_count == 3
+    await _async_register_lovelace_resources(_hass_with(collection))
+    assert len(attempted) == len(_LOVELACE_RESOURCES)
+
+
+@pytest.mark.asyncio
+async def test_lovelace_resources_delete_failure_is_non_fatal():
+    """A failed stale-row delete must not stop the rest of registration."""
+    from custom_components.culiplan import _LOVELACE_RESOURCES
+
+    collection = _FakeResourceCollection(
+        [
+            {
+                "id": "old0",
+                "url": "/hacsfiles/culiplan/lovelace/cards/dist/cooking-mode.js",
+                "type": "module",
+            }
+        ]
+    )
+
+    async def _boom(item_id):
+        raise RuntimeError("cannot delete")
+
+    collection.async_delete_item = _boom
+
+    # Must not raise, and the current resources still get registered.
+    await _async_register_lovelace_resources(_hass_with(collection))
+    assert len(collection.created) == len(_LOVELACE_RESOURCES)
 
 
 @pytest.mark.asyncio
@@ -634,36 +822,19 @@ async def test_async_unload_entry_handles_panel_remove_failure():
 
 def test_read_manifest_version_falls_back_on_failure(monkeypatch):
     """If the manifest JSON read fails, _read_manifest_version returns "dev"."""
-    import custom_components.culiplan as init_mod
     from pathlib import Path as _Path
+
+    import custom_components.culiplan.const as const_mod
 
     class _BoomPath(_Path):
         def read_text(self, *_args, **_kwargs):  # type: ignore[override]
             raise OSError("disk on fire")
 
     def _patched(value):
-        if str(value) == init_mod.__file__:
+        if str(value) == const_mod.__file__:
             return _BoomPath(value)
         return _Path(value)
 
-    monkeypatch.setattr(init_mod, "Path", _patched)
-    assert init_mod._read_manifest_version() == "dev"
+    monkeypatch.setattr(const_mod, "_Path", _patched)
+    assert const_mod._read_manifest_version() == "dev"
 
-
-@pytest.mark.asyncio
-async def test_lovelace_resources_legacy_async_load_failure_returns_empty():
-    """The legacy `.async_load()` fallback path swallows errors and continues."""
-    resources_collection = MagicMock()
-    resources_collection.async_items = AsyncMock(side_effect=AttributeError("old API"))
-    resources_collection.async_load = AsyncMock(
-        side_effect=RuntimeError("load failure")
-    )
-    resources_collection.async_create_item = AsyncMock()
-    lovelace = MagicMock()
-    lovelace.resources = resources_collection
-
-    hass = MagicMock()
-    hass.data = {"lovelace": lovelace}
-
-    # Must not raise — should still attempt registrations with empty existing list.
-    await _async_register_lovelace_resources(hass)

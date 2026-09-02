@@ -2,29 +2,23 @@
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, date, datetime
-from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 
-from .const import DOMAIN
-
-_MANIFEST_PATH = Path(__file__).parent / "manifest.json"
+from .const import DOMAIN, MANIFEST_VERSION
 
 
 def _build_device_info(entry: ConfigEntry) -> DeviceInfo:
     """Return a canonical DeviceInfo for all Culiplan entities.
 
-    Reads ``version`` from ``manifest.json`` so sw_version stays in sync
-    automatically when the manifest is bumped.
+    ``sw_version`` comes from ``const.MANIFEST_VERSION``, which is read once at
+    module import. This used to read manifest.json on every call — but the
+    function runs inside platform setup on the event loop, so HA flagged it as
+    a blocking call on every startup.
     """
-    try:
-        manifest = json.loads(_MANIFEST_PATH.read_text(encoding="utf-8"))
-        sw_version: str | None = manifest.get("version")
-    except Exception:  # noqa: BLE001
-        sw_version = None
+    sw_version: str | None = None if MANIFEST_VERSION == "dev" else MANIFEST_VERSION
 
     return DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},

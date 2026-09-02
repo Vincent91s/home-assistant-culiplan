@@ -1,5 +1,8 @@
 """Constants for the Culiplan integration."""
 
+import json as _json
+from pathlib import Path as _Path
+
 DOMAIN = "culiplan"
 OAUTH_CLIENT_ID = "ha-core"
 BASE_URL = "https://api.culiplan.com"
@@ -62,3 +65,32 @@ CONF_MEALIE_IMPORT_AT = "mealie_import_at"
 
 # How long the rollback button remains available after import (seconds)
 MEALIE_ROLLBACK_WINDOW_SECONDS = 24 * 60 * 60  # 24 hours
+
+
+
+# ─── Integration version ─────────────────────────────────────────────────────
+#
+# Read ONCE, at module import. HA imports integration modules in an executor
+# thread, so this file read never runs on the event loop. Reading the manifest
+# from a coroutine instead makes HA log:
+#
+#   Detected blocking call to read_text with args
+#   (PosixPath('/config/custom_components/culiplan/manifest.json'),)
+#   inside the event loop by custom integration 'culiplan'
+#
+# const.py imports nothing from this package, so every module can import
+# MANIFEST_VERSION from here without risking a circular import.
+
+
+def _read_manifest_version() -> str:
+    """Return the ``version`` field from manifest.json, or "dev" if unreadable."""
+    try:
+        manifest_path = _Path(__file__).parent / "manifest.json"
+        return str(
+            _json.loads(manifest_path.read_text(encoding="utf-8")).get("version", "dev")
+        )
+    except Exception:  # noqa: BLE001
+        return "dev"
+
+
+MANIFEST_VERSION: str = _read_manifest_version()

@@ -23,9 +23,9 @@ through to the Culiplan sidebar panel.
 
 | Card element | Description | Source |
 |---|---|---|
-| `culiplan-kitchen-dashboard` | Today's meal plan with recipe image, servings, time and a shopping-list shortcut | `cards/dist/kitchen-dashboard.js` |
-| `culiplan-pantry-tracker` | Pantry tile grid with expiry warnings (red < 48 h, amber < 7 d), low-stock indicator, filter chips, and inline actions | `cards/dist/pantry-tracker.js` |
-| `culiplan-cooking-mode` | Step-by-step cooking session: step list, active timers with HA-native countdown, voice "next step" shortcut, graceful idle fallback | `cards/dist/cooking-mode.js` |
+| `culiplan-kitchen-dashboard` | Today's meal plan with recipe image, servings, time and a shopping-list shortcut | `custom_components/culiplan/frontend/cards/kitchen-dashboard.js` |
+| `culiplan-pantry-tracker` | Pantry tile grid with expiry warnings (red < 48 h, amber < 7 d), low-stock indicator, filter chips, and inline actions | `custom_components/culiplan/frontend/cards/pantry-tracker.js` |
+| `culiplan-cooking-mode` | Step-by-step cooking session: step list, active timers with HA-native countdown, voice "next step" shortcut, graceful idle fallback | `custom_components/culiplan/frontend/cards/cooking-mode.js` |
 
 ### Cooking Mode card
 
@@ -70,8 +70,14 @@ The cards load automatically when the Culiplan integration is installed via HACS
 The integration's `__init__.py` (`_async_register_lovelace_resources`) registers all three
 card JS files as Lovelace resources on first setup. No manual steps required.
 
-Resources are registered under the HACS-standard path `/hacsfiles/culiplan/...` which HACS
-populates automatically from the integration repo's `lovelace/cards/dist/` directory.
+Resources are registered under `/culiplan_static/cards/...`, a static path the integration
+serves itself from `custom_components/culiplan/frontend/cards/`.
+
+> **Changed in 0.14.2.** Earlier versions registered `/hacsfiles/culiplan/lovelace/cards/dist/...`
+> on the assumption that HACS mirrors the whole repo into `<config>/www/community/`. It does not —
+> for an *integration* repo HACS copies `custom_components/<domain>/` and nothing else, so those
+> URLs always 404'd. Serving the bundles from inside the integration package makes them present
+> for every install method. Dead `/hacsfiles/culiplan/...` rows are removed automatically on setup.
 
 On integration reload the registration is idempotent — cards already registered are not
 re-added. Resources are intentionally **not removed** when the integration is unloaded: doing
@@ -80,22 +86,24 @@ them manually via **HA Settings → Dashboards → Resources**.
 
 ### Manual resource registration
 
-If you installed the integration manually (not via HACS), the auto-registration will fail
-gracefully (logged as a warning) and you must add the resources yourself. Copy the `lovelace/`
-directory to `config/www/culiplan/lovelace/` in your HA config directory, then add:
+A manual install works the same way: the bundles live inside
+`custom_components/culiplan/frontend/cards/`, so copying the integration directory is all
+that is needed — nothing goes into `config/www/`.
+
+Auto-registration only skips if HA's Lovelace resource collection cannot be read (logged as a
+warning). In that case add the resources yourself via the HA Dashboard Resources UI
+(**Settings → Dashboards → Resources**), or in YAML mode:
 
 ```yaml
 lovelace:
   resources:
-    - url: /local/culiplan/lovelace/cards/dist/kitchen-dashboard.js
+    - url: /culiplan_static/cards/kitchen-dashboard.js
       type: module
-    - url: /local/culiplan/lovelace/cards/dist/pantry-tracker.js
+    - url: /culiplan_static/cards/pantry-tracker.js
       type: module
-    - url: /local/culiplan/lovelace/cards/dist/cooking-mode.js
+    - url: /culiplan_static/cards/cooking-mode.js
       type: module
 ```
-
-Or use the HA Dashboard Resources UI (**Settings → Dashboards → Resources**).
 
 ---
 

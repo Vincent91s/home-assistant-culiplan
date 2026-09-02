@@ -5,9 +5,9 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 dist/
-# Exception: Lovelace pre-built JS bundles must be committed (HA loads them directly)
-!lovelace/cards/dist/
-!lovelace/cards/dist/*.js
+# NOTE: the pre-built Lovelace card bundles live in
+# custom_components/culiplan/frontend/cards/ (NOT a dist/ dir) so they ship
+# with the HACS integration copy. They are committed deliberately.
 .env
 .venv/
 venv/
