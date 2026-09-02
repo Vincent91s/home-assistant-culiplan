@@ -88,6 +88,21 @@ const STYLES = `
     height: 100dvh;
     width: 100%;
   }
+  /*
+   * The render path wraps all content in <div class="culiplan-body">, so the
+   * flex chain has to run :host -> .culiplan-body -> .fill without a gap. A
+   * plain block wrapper here silently breaks it: .fill's \`flex: 1\` would be
+   * inert (no flex container above it) and an iframe with no resolved height
+   * falls back to the HTML default of 150px — the exact symptom this whole
+   * fix is about.
+   */
+  .culiplan-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+  }
   /* flex child: min-height 0 stops the default \`auto\` minimum from letting
      iframe content push the box past the host. */
   .fill {
@@ -689,7 +704,8 @@ class CuliplanPanel extends HTMLElement {
     if (!body) {
       body = document.createElement("div");
       body.className = "culiplan-body";
-      body.style.height = "100%";
+      // Height comes from the .culiplan-body rule in STYLES, not an inline
+      // style — see the comment there about keeping the flex chain unbroken.
       shadow.appendChild(body);
     }
     body.replaceChildren(this._buildContent());

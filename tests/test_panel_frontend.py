@@ -77,6 +77,63 @@ def test_fill_grows_to_consume_remaining_space(styles: str) -> None:
     )
 
 
+def test_layout_chain_from_host_to_iframe_is_unbroken(styles: str) -> None:
+    """Every element between :host and the iframe must grow.
+
+    This is the failure 0.14.2 shipped: :host was fixed to 100dvh, but the
+    render path wraps content in <div class="culiplan-body">, which had no
+    stylesheet rule at all — just a block box with an inline height. That
+    broke the chain, so .fill's ``flex: 1`` had no flex container to act in,
+    the iframe resolved to no height, and it fell back to the HTML default
+    iframe box of 150px. Same symptom, one level down.
+
+    Testing :host and .fill in isolation missed it. The chain is the invariant.
+    """
+    source = PANEL_JS.read_text(encoding="utf-8")
+
+    # Discover wrapper classes the render path actually creates, so a NEW
+    # wrapper added later cannot silently break the chain either.
+    wrappers = set(re.findall(r'\.className\s*=\s*"([a-z-]+)"', source))
+    wrappers &= {"culiplan-body"} | {w for w in wrappers if w.endswith("-body")}
+    assert "culiplan-body" in wrappers, "render path no longer creates .culiplan-body"
+
+    for cls in sorted(wrappers):
+        rule = _rule(styles, f".{cls}")
+        assert re.search(r"flex:\s*1", rule), f".{cls} must grow to fill its parent"
+        assert re.search(r"display:\s*flex", rule), (
+            f".{cls} wraps the iframe, so it must be a flex container — "
+            "otherwise the child's flex sizing is inert"
+        )
+        assert re.search(r"min-height:\s*0", rule), f".{cls} needs min-height: 0"
+
+
+def test_layout_is_not_set_from_javascript(styles: str) -> None:
+    """No inline height assignments — layout lives in STYLES.
+
+    ``body.style.height = "100%"`` competed with the flex sizing and hid the
+    broken chain behind a value that looked correct.
+    """
+    source = PANEL_JS.read_text(encoding="utf-8")
+    assert not re.search(r"\.style\.height\s*=", source), (
+        "set height in the STYLES stylesheet, not inline from JS"
+    )
+
+
+def test_iframe_can_never_fall_back_to_the_default_box(styles: str) -> None:
+    """An iframe with no resolved height renders at 150px, not 0.
+
+    That default is why the collapse looked like a deliberate short panel
+    rather than a missing element, in both 0.14.1 and 0.14.2.
+    """
+    fill = _rule(styles, ".fill")
+    grows = re.search(r"flex:\s*1", fill)
+    has_height = re.search(r"height:\s*(100%|100[vd]h)", fill)
+    assert grows or has_height, (
+        ".fill must either flex-grow inside a flex parent or carry an explicit "
+        "height; with neither, the iframe falls back to 150px"
+    )
+
+
 def test_dynamic_viewport_height_is_offered(styles: str) -> None:
     """100dvh keeps mobile browser chrome from clipping the app."""
     host = _rule(styles, ":host")

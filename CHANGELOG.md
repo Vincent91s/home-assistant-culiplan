@@ -2,6 +2,18 @@
 
 All notable changes to the Culiplan Home Assistant integration are documented here. Format adheres to [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.3] — 2026-09-02
+
+Completes the panel fix from 0.14.2. That release made the panel *host* fill the viewport but left the iframe inside it at 150px, so the symptom was unchanged for users.
+
+### Fixed
+
+- **The panel iframe now actually fills the panel.** 0.14.2 corrected `:host` to `100dvh` and rewrote `.fill` to grow with `flex: 1 1 auto` — but the render path wraps all content in `<div class="culiplan-body">`, a wrapper with **no stylesheet rule at all**, only an inline `height: 100%` set from JavaScript. A plain block box there breaks the flex chain: `.fill`'s `flex: 1` has no flex container to act in, so the iframe resolved to no height and fell back to the HTML default iframe box — which is exactly 150px, the same number as the original bug. `.culiplan-body` is now styled as a growing flex column so the chain runs unbroken from `:host` to the iframe, and the inline height is gone (layout belongs in one place).
+
+### Tests
+
+- 683 passing (was 680). The 0.14.2 guards checked `:host` and `.fill` in isolation, which is precisely why they passed while the panel stayed broken — the defect lived in the element *between* them. The new tests assert the **chain**: every wrapper the render path creates must grow and must itself be a flex container, no layout may be set from JavaScript, and `.fill` must never be left able to fall back to the default 150px iframe box. Each was verified to fail against the shipped 0.14.2 stylesheet before being committed.
+
 ## [0.14.2] — 2026-09-02
 
 Fixes the sidebar panel collapsing to a sliver, and cleans up three problems that hit every install: a Lovelace resource list that grew on every restart, card files that were never actually shipped, and blocking file I/O on the event loop.
